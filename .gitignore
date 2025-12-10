@@ -1,7 +1,11 @@
 # Prerequisites
 *.d
+.cache
+.vscode
+build
+tempserver.cpp
 
-# Compiled Object files
+#Compiled Object files
 *.slo
 *.lo
 *.o

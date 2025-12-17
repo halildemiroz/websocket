@@ -10,82 +10,122 @@
 #include <pthread.h>
 
 #define LISTEN_BACKLOG 50
+#define MAX_CLIENTS 2
 
-int clientSockets[2] = {-1, -1};
+typedef struct{
+	int clientSocket;
+	char name[50];
+} ClientArgs;
+
+ClientArgs* clients[MAX_CLIENTS];
 
 pthread_mutex_t clientsMutex = PTHREAD_MUTEX_INITIALIZER;
 
-void forwardMessage(int senderSocket, char* message, int messageLength);
+void forwardMessage(int senderSocket, char* message);
 void removeClient(int clientSocket);
 
 void* handleClient(void* arg){
-	int clientSocket = *(int*)arg;
-	free(arg);
+	
+	ClientArgs* clientInfo = (ClientArgs*)arg;
+	
 	char buffer[1024];
+	char formattedMsg[1024];
+	int readSize;
 
-	while(1){
-		ssize_t bytesRead = read(clientSocket, buffer, sizeof(buffer) - 1);
-		if(bytesRead > 0){
-			buffer[bytesRead] = '\0';
-			printf("Client %d: %s", clientSocket, buffer);
-			forwardMessage(clientSocket, buffer, bytesRead);
-		}else if(bytesRead == 0){
-			printf("Client %d disconnected", clientSocket);
-			removeClient(clientSocket);
-			break;
-		}else{
-			perror("read");
-			removeClient(clientSocket);
-			break;
-		}
+	while((readSize = recv(clientInfo->clientSocket, buffer, 1024, 0)) > 0){
+		buffer[readSize] = '\0';
+
+		snprintf(formattedMsg, sizeof(formattedMsg), "\033[34m[%s]\033[0m: %s", clientInfo->name, buffer);
+
+		forwardMessage(clientInfo->clientSocket, formattedMsg);
+		
+		memset(buffer, 0, 1024);
 	}
+
+	printf("Client [%s] disconnected\n", clientInfo->name);
+	removeClient(clientInfo->clientSocket);
+
+	free(clientInfo);
 	return NULL;
+
+	// free(arg);
+	// char buffer[1024];
+	//
+	// while(1){
+	// 	ssize_t bytesRead = read(clientSocket, buffer, sizeof(buffer) - 1);
+	// 	if(bytesRead > 0){
+	// 		buffer[bytesRead] = '\0';
+	// 		printf("Client %d: %s", clientSocket, buffer);
+	// 		forwardMessage(clientSocket, buffer, bytesRead);
+	// 	}else if(bytesRead == 0){
+	// 		printf("Client %d disconnected", clientSocket);
+	// 		removeClient(clientSocket);
+	// 		break;
+	// 	}else{
+	// 		perror("read");
+	// 		removeClient(clientSocket);
+	// 		break;
+	// 	}
+	// }
+	// return NULL;
 }
 
-void forwardMessage(int senderSocket, char* message, int messageLength){
+void forwardMessage(int senderSocket, char* message){
 	
 	pthread_mutex_lock(&clientsMutex);
-	int targetSocket = -1;
-	targetSocket = (senderSocket == clientSockets[0] ? clientSockets[1] : clientSockets[0]);
 
-	if(targetSocket != -1){
-		ssize_t bytesWritten = write(targetSocket, message, messageLength);
-		if(bytesWritten == -1){
-			perror("write to target client");
-		}else{
-			printf("Successfully forwarded %zd bytes\n", bytesWritten);
+	for(int i = 0; i < MAX_CLIENTS; ++i){
+		if(clients[i] != NULL && clients[i]->clientSocket != senderSocket){
+			ssize_t bytesWritten = send(clients[i]->clientSocket, message, strlen(message), 0);
+			if(bytesWritten == -1){
+				perror("write");
+			}
 		}
-	}else{
-		printf("No other client to forward message to\n");
 	}
 	pthread_mutex_unlock(&clientsMutex);
 }
 
-void addClient(int clientSocket){
+void addClient(ClientArgs* newClient){
 	pthread_mutex_lock(&clientsMutex);
-	
-	if(clientSockets[0] == -1){
-		clientSockets[0] = clientSocket;
-		printf("Client 1 connected: %d\n", clientSocket);
-	}else if(clientSockets[1] == -1){
-		clientSockets[1] = clientSocket;
-		printf("Client 2 connected: %d\n", clientSocket);
-	}else{
-		printf("Server full");
-		close(clientSocket);
+
+	for(int i = 0; i < MAX_CLIENTS; ++i){
+		if(clients[i] == NULL){
+			clients[i] = newClient;
+			printf("Client added to slot %d\n", i);
+			break;
+		}
 	}
+	
+	// if(clientSockets[0] == -1){
+	// 	clientSockets[0] = clientSocket;
+	// 	printf("Client 1 connected: %d\n", clientSocket);
+	// }else if(clientSockets[1] == -1){
+	// 	clientSockets[1] = clientSocket;
+	// 	printf("Client 2 connected: %d\n", clientSocket);
+	// }else{
+	// 	printf("Server full");
+	// 	close(clientSocket);
+	// }
 	pthread_mutex_unlock(&clientsMutex);
 }
 
 void removeClient(int clientSocket){
 	pthread_mutex_lock(&clientsMutex);
-
-	if(clientSockets[0] == clientSocket)
-		clientSockets[0] = -1;
-	else if(clientSockets[1] == clientSocket)
-		clientSockets[1] = -1;
 	
-	close(clientSocket);
+	for(int i = 0; i < MAX_CLIENTS; ++i){
+		if(clients[i] != NULL && clients[i]->clientSocket == clientSocket){
+			close(clients[i]->clientSocket);
+			clients[i] = NULL;
+			break;
+		}
+	}
+
+	// if(clientSockets[0] == clientSocket)
+	// 	clientSockets[0] = -1;
+	// else if(clientSockets[1] == clientSocket)
+	// 	clientSockets[1] = -1;
+	//
+	// close(clientSocket);
 	pthread_mutex_unlock(&clientsMutex);
 
 }
@@ -98,12 +138,17 @@ int main(int argc, char** argv){
 	addrLen = sizeof(addr);
 	clientAddrLen = sizeof(clientAddr);
 
+	for(int i = 0; i < MAX_CLIENTS; ++i) clients[i] = NULL;
+	int opt = 1;
+
 	// Socket
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
 	if(sfd == -1){
 		perror("socket");
 		return -1;
 	}
+
+	setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(8082);
@@ -128,66 +173,59 @@ int main(int argc, char** argv){
 
 	printf("Server waiting for clients..\n");
 
-	while(clientCount < 2){
+	while(1){
+		
+		struct sockaddr_in clientAddr;
+        socklen_t clientAddrLen = sizeof(clientAddr);
+
 		int cfd = accept(sfd, (struct sockaddr*)&clientAddr, &clientAddrLen);
 		if(cfd == -1){
 			perror("accept");
 			continue;
 		}
 
-		int* clientSocketPtr = malloc(sizeof(int));
-		*clientSocketPtr = cfd;
+		ClientArgs* newClient = malloc(sizeof(ClientArgs));
+		newClient->clientSocket = cfd;
 
-		addClient(cfd);
+		int nameRead = recv(cfd, newClient->name, 50,0);
+		if(nameRead<=0){
+			close(cfd);
+			free(newClient);
+			continue;
+		}
 
-		if(clientCount == 0)
-			pthread_create(&thread1, NULL, handleClient, clientSocketPtr);
-		else
-			pthread_create(&thread2, NULL, handleClient, clientSocketPtr);
+		newClient->name[strcspn(newClient->name, "\n")] = 0;
+		
+		printf("New Connection: %s\n", newClient->name);
 
-		clientCount++;
+		addClient(newClient);
 
-		if(clientCount == 1)
-			printf("Waiting for second client..\n");
-		else if(clientCount == 2)
-			printf("Both clients connected\n");
-
+		pthread_t thread;
+		if(pthread_create(&thread, NULL, handleClient, (void*)newClient) != 0) {
+				perror("pthread_create");
+				removeClient(cfd);
+				free(newClient);
+		}else{
+			pthread_detach(thread);
+		}
 	}
+
+	// 	if(clientCount == 0)
+	// 		pthread_create(&thread1, NULL, handleClient, clientSocketPtr);
+	// 	else
+	// 		pthread_create(&thread2, NULL, handleClient, clientSocketPtr);
 	//
-	// // Accept
-	// int cfd = accept(sfd, (struct sockaddr*)&clientAddr, &clientAddrLen);
-	// if(cfd == -1){
-	// 	perror("accept");
-	// 	return -1;
+	// 	clientCount++;
+	//
+	// 	if(clientCount == 1)
+	// 		printf("Waiting for second client..\n");
+	// 	else if(clientCount == 2)
+	// 		printf("Both clients connected\n");
+	//
 	// }
 	//
-	// // send message
-	// while(1){
-	// 	char buffer[1024];
-	// 	ssize_t bytesRead = read(cfd, buffer, sizeof(buffer) - 1);
-	// 	if(bytesRead > 0){
-	// 		buffer[bytesRead] = '\0';
-	// 		printf("Client: %s", buffer);
-	//
-	// 		char response[1024];
-	// 		snprintf(response, sizeof(response), "%s", buffer);
-	//
-	// 		ssize_t bytesWritten = write(cfd, response, strlen(response));
-	// 		if(bytesWritten == -1){
-	// 			perror("write");
-	// 			return -1;
-	// 		}
-	// 	} else if(bytesRead == 0){
-	// 		printf("Client disconnected\n");
-	// 		break;
-	// 	} else {
-	// 		perror("read");
-	// 		return -1;
-	// 	}
-	// }
-	
-	pthread_join(thread1, NULL);
-	pthread_join(thread2, NULL);
+	// pthread_join(thread1, NULL);
+	// pthread_join(thread2, NULL);
 	
 	// Clean Up
 	close(sfd);

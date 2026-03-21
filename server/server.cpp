@@ -1,5 +1,5 @@
-#include <asm-generic/socket.h>
 #include <iostream>
+#include <ranges>
 #include <string>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -9,6 +9,38 @@
 
 #define PORT 8080
 #define BUFFER_SIZE 4096
+
+void sendHandShakeResponse(int clientFD, const char* acceptKey){
+	char response[256];
+
+	int responseLen = snprintf(response, sizeof(response),
+		"HTTP/1.1 101 Switching Protocols\r\n"
+    "Upgrade: websocket\r\n"
+    "Connection: Upgrade\r\n"
+    "Sec-WebSocket-Accept: %s\r\n\r\n",
+		acceptKey);
+
+	ssize_t bytesSent = send(clientFD, response, responseLen, 0);
+}
+
+bool generateWSAcceptKey(const char* httpRequest, char* acceptKeyOut){
+	const char* keyStart = strstr(httpRequest, "Sec-WebSocket-Key: ");
+	if(keyStart == NULL)
+		return false;
+	
+	keyStart += 19;
+	uint8_t concatBuffer[60];
+
+	memcpy(concatBuffer, keyStart, 24);
+	memcpy(concatBuffer + 24, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11", 36);
+
+	uint8_t sha1Result[20];
+	picosec_sha1_hash(concatBuffer, 20, sha1Result);
+	picosec_base64_encode(sha1Result, 20, acceptKeyOut);
+
+	return true;
+
+}
 
 int main(){
 	int serverFD, clientSocket;

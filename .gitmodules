@@ -1,0 +1,3 @@
+[submodule "picosec"]
+	path = picosec
+	url = git@github.com:halildemiroz/picosec.git
